@@ -1,0 +1,6 @@
+# Profile "private" - copy this file to private.conf (without .example) in
+# this same directory and adjust the values below. *.conf is gitignored,
+# *.conf.example is checked in.
+REMOTE="myprivate_remote:claude-sync"
+PROJECTS="$HOME/claude-private"
+CFG="$HOME/.claude-private"

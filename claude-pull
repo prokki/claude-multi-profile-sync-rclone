@@ -1,0 +1,93 @@
+#!/usr/bin/env sh
+# ============================================================
+#  SECURITY NOTICE - read before use
+# ------------------------------------------------------------
+#  1) ALL data ends up in Google Drive - depending on the profile, in a
+#     different account (e.g. a private and a work Google account, see
+#     claude-sync-profiles.local). This includes session transcripts,
+#     which may contain SENSITIVE content (passwords, API keys, personal
+#     data). Secure those accounts with a password + 2FA. Claude
+#     credentials are NOT synced.
+#  2) Deleted files/projects stay in the Google Drive trash for about
+#     30 days (temporary emergency backup), then are gone for good.
+#     To delete immediately: empty the Drive trash.
+#  3) MIRROR RISK: 'claude-push' deletes on Drive whatever is missing
+#     locally; 'claude-pull' deletes locally whatever is missing on
+#     Drive. Rule: session START -> claude-pull, END -> claude-push.
+#     Otherwise a pull can overwrite newer, not-yet-pushed work.
+# ============================================================
+# Fetches project data + memory (incl. transcripts) + settings.json + CLAUDE.md + bin/ + docs/ from Google Drive.
+# Usage:  claude-pull <private|default>      (at the START of a session)
+set -eu
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd)"
+PROFILE="${1:-}"
+PROFILES_DIR="$SCRIPT_DIR/profiles"
+
+list_profiles() { find "$PROFILES_DIR" -maxdepth 1 -name '*.conf' 2>/dev/null | sed 's#.*/##; s/\.conf$//' | sort; }
+
+case "$PROFILE" in
+  ''|*/*|.|..)
+    echo "ERROR: missing or invalid profile name. Available profiles:" >&2
+    list_profiles | sed 's/^/  /' >&2
+    exit 2
+    ;;
+esac
+PROFILE_FILE="$PROFILES_DIR/$PROFILE.conf"
+[ -f "$PROFILE_FILE" ] || {
+  echo "ERROR: unknown profile '$PROFILE'. Available profiles:" >&2
+  list_profiles | sed 's/^/  /' >&2
+  echo "New profile? Add $PROFILES_DIR/$PROFILE.conf (see profiles/*.conf.example for the format)." >&2
+  exit 1
+}
+. "$PROFILE_FILE"
+MEM="$CFG/projects"
+
+echo ">> Pull [$PROFILE] from $REMOTE"
+
+# 1) Project data
+rclone sync "$REMOTE/projects" "$PROJECTS" \
+  --exclude "node_modules/**" \
+  --exclude ".git/**" \
+  --exclude ".DS_Store" \
+  --progress
+
+# 2) Memory + session transcripts
+rclone sync "$REMOTE/memory" "$MEM" \
+  --progress
+
+# 3) Global settings.json (if present on Drive)
+rclone copyto "$REMOTE/config/settings.json" "$CFG/settings.json" 2>/dev/null \
+  || echo "   (no settings.json on Drive yet - skipped)"
+
+# 4) Global CLAUDE.md (if present on Drive)
+rclone copyto "$REMOTE/config/CLAUDE.md" "$CFG/CLAUDE.md" 2>/dev/null \
+  || echo "   (no CLAUDE.md on Drive yet - skipped)"
+
+# 5) bin/ (hook scripts etc.; if present on Drive - can be empty per profile)
+mkdir -p "$CFG/bin"
+if rclone sync "$REMOTE/bin" "$CFG/bin" >/dev/null 2>&1; then
+  echo "   bin/ updated"
+else
+  echo "   (no bin/ on Drive yet - skipped)"
+fi
+
+# 6) docs/ (memory-linked files + wiki/n8n reference docs; if present on Drive)
+mkdir -p "$CFG/docs"
+if rclone sync "$REMOTE/docs" "$CFG/docs" >/dev/null 2>&1; then
+  echo "   docs/ updated"
+else
+  echo "   (no docs/ on Drive yet - skipped)"
+fi
+
+# 7) tmp/ (active working files, e.g. wiki article drafts; if present on Drive)
+mkdir -p "$CFG/tmp"
+if rclone sync "$REMOTE/tmp" "$CFG/tmp" >/dev/null 2>&1; then
+  echo "   tmp/ updated"
+else
+  echo "   (no tmp/ on Drive yet - skipped)"
+fi
+
+echo ">> Pull [$PROFILE] done."
+
+"$SCRIPT_DIR/claude-sync-report" "$PROFILE"

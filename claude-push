@@ -1,0 +1,151 @@
+#!/usr/bin/env sh
+# ============================================================
+#  SECURITY NOTICE - read before use
+# ------------------------------------------------------------
+#  1) ALL data ends up in Google Drive - depending on the profile, in a
+#     different account (e.g. a private and a work Google account, see
+#     claude-sync-profiles.local). This includes session transcripts,
+#     which may contain SENSITIVE content (passwords, API keys, personal
+#     data). Secure those accounts with a password + 2FA. Claude
+#     credentials are NOT synced.
+#  2) Deleted files/projects stay in the Google Drive trash for about
+#     30 days (temporary emergency backup), then are gone for good.
+#     To delete immediately: empty the Drive trash.
+#  3) MIRROR RISK: 'claude-push' deletes on Drive whatever is missing
+#     locally; 'claude-pull' deletes locally whatever is missing on
+#     Drive. Rule: session START -> claude-pull, END -> claude-push.
+#     Otherwise a pull can overwrite newer, not-yet-pushed work.
+# ============================================================
+# Backs up project data + memory (incl. transcripts) + settings.json + CLAUDE.md + bin/ + docs/ to Google Drive.
+# Usage:  claude-push <private|default>      (at the END of a session)
+set -eu
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd)"
+PROFILE="${1:-}"
+PROFILES_DIR="$SCRIPT_DIR/profiles"
+
+list_profiles() { find "$PROFILES_DIR" -maxdepth 1 -name '*.conf' 2>/dev/null | sed 's#.*/##; s/\.conf$//' | sort; }
+
+case "$PROFILE" in
+  ''|*/*|.|..)
+    echo "ERROR: missing or invalid profile name. Available profiles:" >&2
+    list_profiles | sed 's/^/  /' >&2
+    exit 2
+    ;;
+esac
+PROFILE_FILE="$PROFILES_DIR/$PROFILE.conf"
+[ -f "$PROFILE_FILE" ] || {
+  echo "ERROR: unknown profile '$PROFILE'. Available profiles:" >&2
+  list_profiles | sed 's/^/  /' >&2
+  echo "New profile? Add $PROFILES_DIR/$PROFILE.conf (see profiles/*.conf.example for the format)." >&2
+  exit 1
+}
+. "$PROFILE_FILE"
+MEM="$CFG/projects"
+
+echo ">> Push [$PROFILE] to $REMOTE"
+
+# Safety: don't push from a missing project folder (would empty the remote)
+if [ ! -d "$PROJECTS" ]; then
+  echo "ERROR: project folder $PROJECTS does not exist - run 'claude-pull $PROFILE' first?" >&2
+  exit 1
+fi
+
+# Safety: same for the config area. $MEM is the source of the 'rclone sync'
+# below - if it's missing, the remote memory folder is at risk.
+# Typical cause: $CFG was moved/renamed, but claude-sync-profiles.local
+# wasn't updated yet.
+if [ ! -d "$CFG" ]; then
+  echo "ERROR: config directory $CFG does not exist." >&2
+  echo "        Moved or renamed? Then update 'claude-sync-profiles.local'." >&2
+  exit 1
+fi
+if [ ! -d "$MEM" ]; then
+  echo "ERROR: memory directory $MEM does not exist - run 'claude-pull $PROFILE' first?" >&2
+  exit 1
+fi
+
+# 1) Project data
+rclone sync "$PROJECTS" "$REMOTE/projects" \
+  --exclude "node_modules/**" \
+  --exclude ".git/**" \
+  --exclude ".DS_Store" \
+  --progress
+
+# 2) Memory + session transcripts (lives outside the project folder)
+rclone sync "$MEM" "$REMOTE/memory" \
+  --progress
+
+# 3) Global settings.json (single file, copyto -> no deletion/mirroring)
+if [ -f "$CFG/settings.json" ]; then
+  rclone copyto "$CFG/settings.json" "$REMOTE/config/settings.json"
+fi
+
+# 4) Global CLAUDE.md (single file, copyto -> no deletion/mirroring)
+if [ -f "$CFG/CLAUDE.md" ]; then
+  rclone copyto "$CFG/CLAUDE.md" "$REMOTE/config/CLAUDE.md"
+fi
+
+# 5) bin/ (hook scripts etc.)
+if [ -d "$CFG/bin" ]; then
+  rclone sync "$CFG/bin" "$REMOTE/bin" --progress
+fi
+
+# 6) docs/ (memory-linked files + wiki/n8n reference docs)
+if [ -d "$CFG/docs" ]; then
+  rclone sync "$CFG/docs" "$REMOTE/docs" --progress
+fi
+
+# 7) tmp/ (active working files, e.g. wiki article drafts)
+if [ -d "$CFG/tmp" ]; then
+  rclone sync "$CFG/tmp" "$REMOTE/tmp" --progress
+fi
+
+echo ">> Push [$PROFILE] done."
+
+# --- Verification on Drive ---
+BASE="${REMOTE##*:}"
+echo
+echo ">> Checking $REMOTE ..."
+if ! SIZE_OUT=$(rclone size "$REMOTE" 2>&1); then
+  echo "ERROR: Drive unreachable / check failed:" >&2
+  echo "$SIZE_OUT" >&2
+  exit 1
+fi
+LIST=$(rclone lsd "$REMOTE" 2>/dev/null | awk '{print $NF}')
+echo "$BASE/"
+if printf '%s\n' "$LIST" | grep -qx projects; then
+  echo "├── projects/   <- your projects"
+else
+  echo "├── projects/   MISSING!"
+fi
+if printf '%s\n' "$LIST" | grep -qx memory; then
+  echo "├── memory/     <- memory + transcripts"
+else
+  echo "├── memory/     MISSING!"
+fi
+if printf '%s\n' "$LIST" | grep -qx config; then
+  echo "├── config/     <- global settings.json + CLAUDE.md"
+else
+  echo "├── config/     (nothing pushed)"
+fi
+if printf '%s\n' "$LIST" | grep -qx bin; then
+  echo "├── bin/        <- hook scripts"
+else
+  echo "├── bin/        (no bin/ pushed)"
+fi
+if printf '%s\n' "$LIST" | grep -qx docs; then
+  echo "├── docs/       <- memory + wiki/n8n reference docs"
+else
+  echo "├── docs/       (no docs/ pushed)"
+fi
+if printf '%s\n' "$LIST" | grep -qx tmp; then
+  echo "└── tmp/        <- active working files (e.g. wiki drafts)"
+else
+  echo "└── tmp/        (no tmp/ pushed)"
+fi
+OBJS=$(printf '%s' "$SIZE_OUT" | sed -n 's/^Total objects: *\([0-9]*\).*/\1/p')
+SIZE=$(printf '%s' "$SIZE_OUT" | sed -n 's/^Total size: *\([0-9.]* [A-Za-z]*\).*/\1/p')
+echo "${OBJS:-?} objects, ${SIZE:-?}"
+
+"$SCRIPT_DIR/claude-sync-report" "$PROFILE"

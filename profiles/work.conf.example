@@ -1,0 +1,6 @@
+# Profile "work" - copy this file to work.conf (without .example) in this
+# same directory and adjust the values below. *.conf is gitignored,
+# *.conf.example is checked in.
+REMOTE="mywork_remote:claude-sync"
+PROJECTS="$HOME/claude-work"
+CFG="$HOME/.claude-work"

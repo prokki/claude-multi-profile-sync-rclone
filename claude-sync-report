@@ -1,0 +1,100 @@
+#!/usr/bin/env sh
+# Size/content overview by category + project (local state).
+# Covers projects, memory/transcripts, and the config area (CLAUDE.md, bin/, docs/, tmp/).
+# Usage:  claude-sync-report <private|default>   (also called from push/pull)
+set -eu
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd)"
+PROFILE="${1:-}"
+PROFILES_DIR="$SCRIPT_DIR/profiles"
+
+list_profiles() { find "$PROFILES_DIR" -maxdepth 1 -name '*.conf' 2>/dev/null | sed 's#.*/##; s/\.conf$//' | sort; }
+
+case "$PROFILE" in
+  ''|*/*|.|..)
+    echo "ERROR: missing or invalid profile name. Available profiles:" >&2
+    list_profiles | sed 's/^/  /' >&2
+    exit 2
+    ;;
+esac
+PROFILE_FILE="$PROFILES_DIR/$PROFILE.conf"
+[ -f "$PROFILE_FILE" ] || {
+  echo "ERROR: unknown profile '$PROFILE'. Available profiles:" >&2
+  list_profiles | sed 's/^/  /' >&2
+  echo "New profile? Add $PROFILES_DIR/$PROFILE.conf (see profiles/*.conf.example for the format)." >&2
+  exit 1
+}
+. "$PROFILE_FILE"
+MEM="$CFG/projects"
+short() { sed "s#$HOME/#~/#"; }
+
+echo
+echo "============== Sync overview [$PROFILE] =============="
+
+# --- Projects: size, file count, last modified ---
+# Projects live either directly under $PROJECTS (e.g. keep-todo2) or
+# bundled under $PROJECTS/projects/ (since 2026-09-03, see PROJECTS.md).
+# Hidden folders (.claude etc.) and "projects" itself don't count as a project.
+echo "-- Projects ($PROJECTS) --"
+{
+  find "$PROJECTS" -mindepth 1 -maxdepth 1 -type d ! -name '.*' ! -path "$PROJECTS/projects" 2>/dev/null
+  [ -d "$PROJECTS/projects" ] && find "$PROJECTS/projects" -mindepth 1 -maxdepth 1 -type d ! -name '.*' 2>/dev/null
+} | sort | while read -r d; do
+  size=$(du -sh "$d" 2>/dev/null | cut -f1)
+  files=$(find "$d" -type f 2>/dev/null | wc -l | tr -d ' ')
+  last=$(find "$d" -type f -printf '%TY-%Tm-%Td\n' 2>/dev/null | sort | tail -1)
+  printf '  %-20s %7s  %4s files  last %s\n' "$(basename "$d")" "$size" "$files" "${last:-—}"
+done
+
+# --- Memory area: transcripts vs. actual memory ---
+echo "-- Memory area --"
+TRANS_N=$(find "$MEM" -name '*.jsonl' -type f 2>/dev/null | wc -l | tr -d ' ')
+TRANS_S=$(find "$MEM" -name '*.jsonl' -type f -exec du -ch {} + 2>/dev/null | tail -1 | cut -f1)
+MEM_S=$(find "$MEM" -path '*/memory/*' -type f -exec du -ch {} + 2>/dev/null | tail -1 | cut -f1)
+printf '  %-20s %7s  %4s sessions\n' "Transcripts (.jsonl)" "${TRANS_S:-0}" "$TRANS_N"
+printf '  %-20s %7s\n' "Memory (memory/*)" "${MEM_S:-0}"
+
+# --- Config area: CLAUDE.md, bin/, docs/, tmp/ (directly under $CFG, outside $MEM) ---
+echo "-- Config area ($CFG) --"
+if [ -f "$CFG/CLAUDE.md" ]; then
+  size=$(du -sh "$CFG/CLAUDE.md" 2>/dev/null | cut -f1)
+  printf '  %-20s %7s  %4s file\n' "CLAUDE.md" "$size" 1
+fi
+for d in bin docs tmp; do
+  if [ -d "$CFG/$d" ]; then
+    size=$(du -sh "$CFG/$d" 2>/dev/null | cut -f1)
+    files=$(find "$CFG/$d" -type f 2>/dev/null | wc -l | tr -d ' ')
+    last=$(find "$CFG/$d" -type f -printf '%TY-%Tm-%Td\n' 2>/dev/null | sort | tail -1)
+    printf '  %-20s %7s  %4s files  last %s\n' "$d/" "$size" "$files" "${last:-—}"
+  fi
+done
+
+# --- Largest individual files (bloat detector) ---
+echo "-- Largest individual files (category + full path) --"
+find "$PROJECTS" "$MEM" "$CFG/CLAUDE.md" "$CFG/bin" "$CFG/docs" "$CFG/tmp" -type f -exec du -h {} + 2>/dev/null | sort -rh | head -5 | while read -r sz path; do
+  case "$path" in
+    "$MEM"/*)     [ "${path##*.}" = "jsonl" ] && cat="Transcript" || cat="Memory" ;;
+    "$CFG"/bin/*) cat="Bin" ;;
+    "$CFG"/docs/*) cat="Docs" ;;
+    "$CFG"/tmp/*) cat="Tmp" ;;
+    "$CFG/CLAUDE.md") cat="Config" ;;
+    *)        cat="Project" ;;
+  esac
+  printf '  %7s  %-11s %s\n' "$sz" "$cat" "$(printf '%s' "$path" | short)"
+done
+
+# --- Transparency: present locally but NOT uploaded ---
+EXCL=$(find "$PROJECTS" -type d \( -name .git -o -name node_modules \) 2>/dev/null || true)
+if [ -n "$EXCL" ]; then
+  echo "-- Excluded (counted in the sizes above, but NOT synced) --"
+  printf '%s\n' "$EXCL" | while read -r e; do printf '  %s\n' "$(printf '%s' "$e" | short)"; done
+fi
+
+# --- Total upload footprint ---
+echo "-----------------------------------------------------"
+GTP=$(du -sh "$PROJECTS" 2>/dev/null | cut -f1)
+GTM=$(du -sh "$MEM" 2>/dev/null | cut -f1)
+GTC=$(du -ch "$CFG/CLAUDE.md" "$CFG/bin" "$CFG/docs" "$CFG/tmp" 2>/dev/null | tail -1 | cut -f1)
+TOTAL=$(du -ch "$PROJECTS" "$MEM" "$CFG/CLAUDE.md" "$CFG/bin" "$CFG/docs" "$CFG/tmp" 2>/dev/null | tail -1 | cut -f1)
+printf '  Projects %s  +  Memory area %s  +  Config area %s  =  TOTAL %s\n' "$GTP" "$GTM" "${GTC:-0}" "$TOTAL"
+echo "====================================================="
