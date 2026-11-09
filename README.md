@@ -1,4 +1,4 @@
-# claude-multi-profile-sync-drive
+# claude-multi-profile-sync-rclone
 
 Shell scripts to sync [Claude Code](https://claude.com/claude-code) data
 (projects, memory, session transcripts, `settings.json`, `CLAUDE.md`) to cloud
@@ -26,6 +26,7 @@ Two use cases:
    to touch the others.
 3. At session **start**: `./claude-pull <profile>`
    At session **end**: `./claude-push <profile>`
+   Not sure what a run would do? Add the option `-n` (`--dry-run`) first.
 
 `<profile>` is the file name (without `.conf`) under `profiles/`
 (e.g. `private` / `work`).
@@ -40,10 +41,17 @@ environment.
 
 | Script | Purpose |
 |---|---|
-| `claude-pull <profile>` | Fetches project data, memory (incl. transcripts), `settings.json`, `CLAUDE.md`, `bin/`, `docs/`, `tmp/` from the cloud. Run at session **start**. |
-| `claude-push <profile>` | Backs up the same categories to the cloud. Run at session **end**. Checks beforehand that the local source folders exist (otherwise a moved/deleted directory would empty the cloud copy). |
+| `claude-pull [-n] <profile>` | Fetches project data, memory (incl. transcripts), `settings.json`, `CLAUDE.md`, `bin/`, `docs/`, `tmp/` (and `skills/`, see [Skills](#skills)) from the cloud. Run at session **start**. |
+| `claude-push [-n] <profile>` | Backs up the same categories to the cloud. Run at session **end**. Checks beforehand that the local source folders exist (otherwise a moved/deleted directory would empty the cloud copy). |
 | `profiles/*.conf.example` / `profiles/*.conf` | Profile definitions (remote, local paths), one file per profile. The `.example` files are checked in as templates, the plain `.conf` files hold your real values and are gitignored (see [Setup](#setup)). |
 | `claude-sync-report <profile>` | Size/content overview (local state) by category and project. Automatically called at the end of `pull`/`push`. |
+
+### Options
+
+| Option | Meaning |
+|---|---|
+| `-n`, `--dry-run` | Shows what would be transferred or deleted, changes nothing. Use it for the first run on a new machine. |
+| `-h`, `--help` | Usage and the list of available profiles. |
 
 ## Security notes
 
@@ -70,11 +78,42 @@ PROJECTS="$HOME/Projects/claude-private"     # local project folder
 CFG="$HOME/.claude-private"                  # this profile's CLAUDE_CONFIG_DIR
 ```
 
+Optional fourth variable:
+
+```sh
+SYNC_SKILLS=1                                # also sync $CFG/skills (see below)
+```
+
 `MEM` (the memory + transcript directory) is derived automatically as
 `$CFG/projects` — no need to set it. Adding a new profile just means adding a
 new `profiles/<name>.conf` file, nothing else to touch. The plain `.conf`
 files are gitignored (see `.gitignore`); `profiles/*.conf.example` are
 checked in and show the format.
+
+## Per-project `tmp/` and `docs/`
+
+Nothing extra is needed for them: if the workspace folder (`PROJECTS`) contains
+`projects/<name>/tmp/` and `projects/<name>/docs/`, they travel with step 1
+(`PROJECTS` ⇄ `$REMOTE/projects`) like every other project file. Only
+`node_modules/`, `.git/` and `.DS_Store` are excluded. The `bin/`, `docs/` and
+`tmp/` steps in the scripts refer to the **profile** directory (`$CFG/...`),
+not to the per-project folders.
+
+## Skills
+
+With `SYNC_SKILLS=1` in a profile, `$CFG/skills/` is synced to `$REMOTE/skills/`
+using `rclone copy --update`:
+
+- **Nothing is ever deleted**, on either side (a removed skill has to be
+  removed by hand on the other machine).
+- A file is only transferred if the source is **newer** than the target, so a
+  pull on a machine with newer skills can't overwrite its work.
+- `skills/synced/` is excluded: it is managed by claude.ai itself and bound to
+  the account, so it must not get a second sync path.
+- `*.bak-*` backup files stay local.
+
+Profiles without `SYNC_SKILLS=1` (e.g. a private profile) don't touch skills at
+all.
 
 ## Why not `~/.claude`?
 

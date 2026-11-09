@@ -2,9 +2,9 @@
 # ============================================================
 #  SECURITY NOTICE - read before use
 # ------------------------------------------------------------
-#  1) ALL data ends up in Google Drive - depending on the profile, in a
+#  1) ALL data ends up in the cloud (e.g. Google Drive) - depending on the profile, in a
 #     different account (e.g. a private and a work Google account, see
-#     claude-sync-profiles.local). This includes session transcripts,
+#     profiles/*.conf). This includes session transcripts,
 #     which may contain SENSITIVE content (passwords, API keys, personal
 #     data). Secure those accounts with a password + 2FA. Claude
 #     credentials are NOT synced.
@@ -16,15 +16,43 @@
 #     Drive. Rule: session START -> claude-pull, END -> claude-push.
 #     Otherwise a pull can overwrite newer, not-yet-pushed work.
 # ============================================================
-# Fetches project data + memory (incl. transcripts) + settings.json + CLAUDE.md + bin/ + docs/ from Google Drive.
-# Usage:  claude-pull <private|default>      (at the START of a session)
+# Fetches project data + memory (incl. transcripts) + settings.json + CLAUDE.md + bin/ + docs/ + tmp/
+# (+ skills/ if SYNC_SKILLS=1 in the profile) from the cloud.
+# Usage:  claude-pull [-n|--dry-run] <profile>      (at the START of a session)
 set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd)"
-PROFILE="${1:-}"
 PROFILES_DIR="$SCRIPT_DIR/profiles"
 
 list_profiles() { find "$PROFILES_DIR" -maxdepth 1 -name '*.conf' 2>/dev/null | sed 's#.*/##; s/\.conf$//' | sort; }
+
+usage() {
+  echo "Usage: claude-pull [-n|--dry-run] <profile>"
+  echo "  -n, --dry-run   show what would change, transfer/delete nothing"
+  echo "  -h, --help      show this help"
+  echo "Available profiles:"
+  list_profiles | sed 's/^/  /'
+}
+
+DRY_OPT=""
+PROFILE=""
+for arg in "$@"; do
+  case "$arg" in
+    -n|--dry-run) DRY_OPT="--dry-run" ;;
+    -h|--help) usage; exit 0 ;;
+    -*) echo "ERROR: unknown option '$arg'." >&2; usage >&2; exit 2 ;;
+    *)
+      [ -z "$PROFILE" ] || { echo "ERROR: more than one profile given." >&2; exit 2; }
+      PROFILE="$arg"
+      ;;
+  esac
+done
+
+# Runs an rclone command; quiet normally, verbose in dry-run mode (so the
+# plan is visible). Returns rclone's exit code.
+run_quiet() {
+  if [ -n "$DRY_OPT" ]; then "$@" -v; else "$@" >/dev/null 2>&1; fi
+}
 
 case "$PROFILE" in
   ''|*/*|.|..)
@@ -43,49 +71,65 @@ PROFILE_FILE="$PROFILES_DIR/$PROFILE.conf"
 . "$PROFILE_FILE"
 MEM="$CFG/projects"
 
-echo ">> Pull [$PROFILE] from $REMOTE"
+echo ">> Pull [$PROFILE] from $REMOTE${DRY_OPT:+  (DRY RUN - nothing is changed)}"
 
-# 1) Project data
+# 1) Project data (incl. projects/*/tmp and projects/*/docs - no extra step needed)
 rclone sync "$REMOTE/projects" "$PROJECTS" \
   --exclude "node_modules/**" \
   --exclude ".git/**" \
   --exclude ".DS_Store" \
-  --progress
+  $DRY_OPT --progress
 
 # 2) Memory + session transcripts
 rclone sync "$REMOTE/memory" "$MEM" \
-  --progress
+  $DRY_OPT --progress
 
 # 3) Global settings.json (if present on Drive)
-rclone copyto "$REMOTE/config/settings.json" "$CFG/settings.json" 2>/dev/null \
+run_quiet rclone copyto "$REMOTE/config/settings.json" "$CFG/settings.json" $DRY_OPT \
   || echo "   (no settings.json on Drive yet - skipped)"
 
 # 4) Global CLAUDE.md (if present on Drive)
-rclone copyto "$REMOTE/config/CLAUDE.md" "$CFG/CLAUDE.md" 2>/dev/null \
+run_quiet rclone copyto "$REMOTE/config/CLAUDE.md" "$CFG/CLAUDE.md" $DRY_OPT \
   || echo "   (no CLAUDE.md on Drive yet - skipped)"
 
 # 5) bin/ (hook scripts etc.; if present on Drive - can be empty per profile)
-mkdir -p "$CFG/bin"
-if rclone sync "$REMOTE/bin" "$CFG/bin" >/dev/null 2>&1; then
+[ -n "$DRY_OPT" ] || mkdir -p "$CFG/bin"
+if run_quiet rclone sync "$REMOTE/bin" "$CFG/bin" $DRY_OPT; then
   echo "   bin/ updated"
 else
   echo "   (no bin/ on Drive yet - skipped)"
 fi
 
 # 6) docs/ (memory-linked files + wiki/n8n reference docs; if present on Drive)
-mkdir -p "$CFG/docs"
-if rclone sync "$REMOTE/docs" "$CFG/docs" >/dev/null 2>&1; then
+[ -n "$DRY_OPT" ] || mkdir -p "$CFG/docs"
+if run_quiet rclone sync "$REMOTE/docs" "$CFG/docs" $DRY_OPT; then
   echo "   docs/ updated"
 else
   echo "   (no docs/ on Drive yet - skipped)"
 fi
 
 # 7) tmp/ (active working files, e.g. wiki article drafts; if present on Drive)
-mkdir -p "$CFG/tmp"
-if rclone sync "$REMOTE/tmp" "$CFG/tmp" >/dev/null 2>&1; then
+[ -n "$DRY_OPT" ] || mkdir -p "$CFG/tmp"
+if run_quiet rclone sync "$REMOTE/tmp" "$CFG/tmp" $DRY_OPT; then
   echo "   tmp/ updated"
 else
   echo "   (no tmp/ on Drive yet - skipped)"
+fi
+
+# 8) skills/ (only if the profile sets SYNC_SKILLS=1). 'copy --update' never
+#    deletes and never overwrites a NEWER local file, so a pull on a machine
+#    with newer skills can't destroy anything. skills/synced/ is managed by
+#    claude.ai itself (account-bound) and is never touched; *.bak-* stay local.
+if [ "${SYNC_SKILLS:-}" = 1 ]; then
+  [ -n "$DRY_OPT" ] || mkdir -p "$CFG/skills"
+  if rclone lsf "$REMOTE/skills" >/dev/null 2>&1; then
+    rclone copy "$REMOTE/skills" "$CFG/skills" --update \
+      --exclude "synced/**" --exclude "*.bak-*" \
+      $DRY_OPT -v
+    echo "   skills/ updated (copy --update, nothing deleted)"
+  else
+    echo "   (no skills/ on Drive yet - skipped)"
+  fi
 fi
 
 echo ">> Pull [$PROFILE] done."

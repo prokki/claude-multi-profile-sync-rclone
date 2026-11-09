@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # Size/content overview by category + project (local state).
-# Covers projects, memory/transcripts, and the config area (CLAUDE.md, bin/, docs/, tmp/).
-# Usage:  claude-sync-report <private|default>   (also called from push/pull)
+# Covers projects, memory/transcripts, and the config area (CLAUDE.md, bin/, docs/, tmp/, skills/ if SYNC_SKILLS=1).
+# Usage:  claude-sync-report <profile>   (also called from push/pull)
 set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd)"
@@ -26,6 +26,9 @@ PROFILE_FILE="$PROFILES_DIR/$PROFILE.conf"
 }
 . "$PROFILE_FILE"
 MEM="$CFG/projects"
+# skills/ counts only for profiles that sync it (SYNC_SKILLS=1)
+SKILLS_DIR=""
+[ "${SYNC_SKILLS:-}" = 1 ] && SKILLS_DIR="$CFG/skills"
 short() { sed "s#$HOME/#~/#"; }
 
 echo
@@ -54,13 +57,13 @@ MEM_S=$(find "$MEM" -path '*/memory/*' -type f -exec du -ch {} + 2>/dev/null | t
 printf '  %-20s %7s  %4s sessions\n' "Transcripts (.jsonl)" "${TRANS_S:-0}" "$TRANS_N"
 printf '  %-20s %7s\n' "Memory (memory/*)" "${MEM_S:-0}"
 
-# --- Config area: CLAUDE.md, bin/, docs/, tmp/ (directly under $CFG, outside $MEM) ---
+# --- Config area: CLAUDE.md, bin/, docs/, tmp/, skills/ (directly under $CFG, outside $MEM) ---
 echo "-- Config area ($CFG) --"
 if [ -f "$CFG/CLAUDE.md" ]; then
   size=$(du -sh "$CFG/CLAUDE.md" 2>/dev/null | cut -f1)
   printf '  %-20s %7s  %4s file\n' "CLAUDE.md" "$size" 1
 fi
-for d in bin docs tmp; do
+for d in bin docs tmp ${SKILLS_DIR:+skills}; do
   if [ -d "$CFG/$d" ]; then
     size=$(du -sh "$CFG/$d" 2>/dev/null | cut -f1)
     files=$(find "$CFG/$d" -type f 2>/dev/null | wc -l | tr -d ' ')
@@ -71,12 +74,13 @@ done
 
 # --- Largest individual files (bloat detector) ---
 echo "-- Largest individual files (category + full path) --"
-find "$PROJECTS" "$MEM" "$CFG/CLAUDE.md" "$CFG/bin" "$CFG/docs" "$CFG/tmp" -type f -exec du -h {} + 2>/dev/null | sort -rh | head -5 | while read -r sz path; do
+find "$PROJECTS" "$MEM" "$CFG/CLAUDE.md" "$CFG/bin" "$CFG/docs" "$CFG/tmp" $SKILLS_DIR -type f -exec du -h {} + 2>/dev/null | sort -rh | head -5 | while read -r sz path; do
   case "$path" in
     "$MEM"/*)     [ "${path##*.}" = "jsonl" ] && cat="Transcript" || cat="Memory" ;;
     "$CFG"/bin/*) cat="Bin" ;;
     "$CFG"/docs/*) cat="Docs" ;;
     "$CFG"/tmp/*) cat="Tmp" ;;
+    "$CFG"/skills/*) cat="Skills" ;;
     "$CFG/CLAUDE.md") cat="Config" ;;
     *)        cat="Project" ;;
   esac
@@ -90,11 +94,15 @@ if [ -n "$EXCL" ]; then
   printf '%s\n' "$EXCL" | while read -r e; do printf '  %s\n' "$(printf '%s' "$e" | short)"; done
 fi
 
+if [ -n "$SKILLS_DIR" ] && [ -d "$SKILLS_DIR" ]; then
+  echo "-- skills/: synced/ and *.bak-* are counted above, but NOT synced --"
+fi
+
 # --- Total upload footprint ---
 echo "-----------------------------------------------------"
 GTP=$(du -sh "$PROJECTS" 2>/dev/null | cut -f1)
 GTM=$(du -sh "$MEM" 2>/dev/null | cut -f1)
-GTC=$(du -ch "$CFG/CLAUDE.md" "$CFG/bin" "$CFG/docs" "$CFG/tmp" 2>/dev/null | tail -1 | cut -f1)
-TOTAL=$(du -ch "$PROJECTS" "$MEM" "$CFG/CLAUDE.md" "$CFG/bin" "$CFG/docs" "$CFG/tmp" 2>/dev/null | tail -1 | cut -f1)
+GTC=$(du -ch "$CFG/CLAUDE.md" "$CFG/bin" "$CFG/docs" "$CFG/tmp" $SKILLS_DIR 2>/dev/null | tail -1 | cut -f1)
+TOTAL=$(du -ch "$PROJECTS" "$MEM" "$CFG/CLAUDE.md" "$CFG/bin" "$CFG/docs" "$CFG/tmp" $SKILLS_DIR 2>/dev/null | tail -1 | cut -f1)
 printf '  Projects %s  +  Memory area %s  +  Config area %s  =  TOTAL %s\n' "$GTP" "$GTM" "${GTC:-0}" "$TOTAL"
 echo "====================================================="

@@ -2,9 +2,9 @@
 # ============================================================
 #  SECURITY NOTICE - read before use
 # ------------------------------------------------------------
-#  1) ALL data ends up in Google Drive - depending on the profile, in a
+#  1) ALL data ends up in the cloud (e.g. Google Drive) - depending on the profile, in a
 #     different account (e.g. a private and a work Google account, see
-#     claude-sync-profiles.local). This includes session transcripts,
+#     profiles/*.conf). This includes session transcripts,
 #     which may contain SENSITIVE content (passwords, API keys, personal
 #     data). Secure those accounts with a password + 2FA. Claude
 #     credentials are NOT synced.
@@ -16,15 +16,37 @@
 #     Drive. Rule: session START -> claude-pull, END -> claude-push.
 #     Otherwise a pull can overwrite newer, not-yet-pushed work.
 # ============================================================
-# Backs up project data + memory (incl. transcripts) + settings.json + CLAUDE.md + bin/ + docs/ to Google Drive.
-# Usage:  claude-push <private|default>      (at the END of a session)
+# Backs up project data + memory (incl. transcripts) + settings.json + CLAUDE.md + bin/ + docs/ + tmp/
+# (+ skills/ if SYNC_SKILLS=1 in the profile) to the cloud.
+# Usage:  claude-push [-n|--dry-run] <profile>      (at the END of a session)
 set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd)"
-PROFILE="${1:-}"
 PROFILES_DIR="$SCRIPT_DIR/profiles"
 
 list_profiles() { find "$PROFILES_DIR" -maxdepth 1 -name '*.conf' 2>/dev/null | sed 's#.*/##; s/\.conf$//' | sort; }
+
+usage() {
+  echo "Usage: claude-push [-n|--dry-run] <profile>"
+  echo "  -n, --dry-run   show what would change, transfer/delete nothing"
+  echo "  -h, --help      show this help"
+  echo "Available profiles:"
+  list_profiles | sed 's/^/  /'
+}
+
+DRY_OPT=""
+PROFILE=""
+for arg in "$@"; do
+  case "$arg" in
+    -n|--dry-run) DRY_OPT="--dry-run" ;;
+    -h|--help) usage; exit 0 ;;
+    -*) echo "ERROR: unknown option '$arg'." >&2; usage >&2; exit 2 ;;
+    *)
+      [ -z "$PROFILE" ] || { echo "ERROR: more than one profile given." >&2; exit 2; }
+      PROFILE="$arg"
+      ;;
+  esac
+done
 
 case "$PROFILE" in
   ''|*/*|.|..)
@@ -43,7 +65,7 @@ PROFILE_FILE="$PROFILES_DIR/$PROFILE.conf"
 . "$PROFILE_FILE"
 MEM="$CFG/projects"
 
-echo ">> Push [$PROFILE] to $REMOTE"
+echo ">> Push [$PROFILE] to $REMOTE${DRY_OPT:+  (DRY RUN - nothing is changed)}"
 
 # Safety: don't push from a missing project folder (would empty the remote)
 if [ ! -d "$PROJECTS" ]; then
@@ -53,11 +75,11 @@ fi
 
 # Safety: same for the config area. $MEM is the source of the 'rclone sync'
 # below - if it's missing, the remote memory folder is at risk.
-# Typical cause: $CFG was moved/renamed, but claude-sync-profiles.local
+# Typical cause: $CFG was moved/renamed, but profiles/$PROFILE.conf
 # wasn't updated yet.
 if [ ! -d "$CFG" ]; then
   echo "ERROR: config directory $CFG does not exist." >&2
-  echo "        Moved or renamed? Then update 'claude-sync-profiles.local'." >&2
+  echo "        Moved or renamed? Then update $PROFILE_FILE." >&2
   exit 1
 fi
 if [ ! -d "$MEM" ]; then
@@ -65,40 +87,50 @@ if [ ! -d "$MEM" ]; then
   exit 1
 fi
 
-# 1) Project data
+# 1) Project data (incl. projects/*/tmp and projects/*/docs - no extra step needed)
 rclone sync "$PROJECTS" "$REMOTE/projects" \
   --exclude "node_modules/**" \
   --exclude ".git/**" \
   --exclude ".DS_Store" \
-  --progress
+  $DRY_OPT --progress
 
 # 2) Memory + session transcripts (lives outside the project folder)
 rclone sync "$MEM" "$REMOTE/memory" \
-  --progress
+  $DRY_OPT --progress
 
 # 3) Global settings.json (single file, copyto -> no deletion/mirroring)
 if [ -f "$CFG/settings.json" ]; then
-  rclone copyto "$CFG/settings.json" "$REMOTE/config/settings.json"
+  rclone copyto "$CFG/settings.json" "$REMOTE/config/settings.json" $DRY_OPT
 fi
 
 # 4) Global CLAUDE.md (single file, copyto -> no deletion/mirroring)
 if [ -f "$CFG/CLAUDE.md" ]; then
-  rclone copyto "$CFG/CLAUDE.md" "$REMOTE/config/CLAUDE.md"
+  rclone copyto "$CFG/CLAUDE.md" "$REMOTE/config/CLAUDE.md" $DRY_OPT
 fi
 
 # 5) bin/ (hook scripts etc.)
 if [ -d "$CFG/bin" ]; then
-  rclone sync "$CFG/bin" "$REMOTE/bin" --progress
+  rclone sync "$CFG/bin" "$REMOTE/bin" $DRY_OPT --progress
 fi
 
 # 6) docs/ (memory-linked files + wiki/n8n reference docs)
 if [ -d "$CFG/docs" ]; then
-  rclone sync "$CFG/docs" "$REMOTE/docs" --progress
+  rclone sync "$CFG/docs" "$REMOTE/docs" $DRY_OPT --progress
 fi
 
 # 7) tmp/ (active working files, e.g. wiki article drafts)
 if [ -d "$CFG/tmp" ]; then
-  rclone sync "$CFG/tmp" "$REMOTE/tmp" --progress
+  rclone sync "$CFG/tmp" "$REMOTE/tmp" $DRY_OPT --progress
+fi
+
+# 8) skills/ (only if the profile sets SYNC_SKILLS=1). 'copy --update' never
+#    deletes and never overwrites a NEWER remote file. skills/synced/ is
+#    managed by claude.ai itself (account-bound) and is never touched;
+#    *.bak-* stay local.
+if [ "${SYNC_SKILLS:-}" = 1 ] && [ -d "$CFG/skills" ]; then
+  rclone copy "$CFG/skills" "$REMOTE/skills" --update \
+    --exclude "synced/**" --exclude "*.bak-*" \
+    $DRY_OPT -v
 fi
 
 echo ">> Push [$PROFILE] done."
@@ -138,6 +170,13 @@ if printf '%s\n' "$LIST" | grep -qx docs; then
   echo "├── docs/       <- memory + wiki/n8n reference docs"
 else
   echo "├── docs/       (no docs/ pushed)"
+fi
+if [ "${SYNC_SKILLS:-}" = 1 ]; then
+  if printf '%s\n' "$LIST" | grep -qx skills; then
+    echo "├── skills/     <- skills (without synced/ and *.bak-*)"
+  else
+    echo "├── skills/     (no skills/ pushed)"
+  fi
 fi
 if printf '%s\n' "$LIST" | grep -qx tmp; then
   echo "└── tmp/        <- active working files (e.g. wiki drafts)"
