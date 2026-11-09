@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Makes claude-pull/claude-push/claude-sync-report available as plain
+# Makes claude-pull/claude-push/claude-sync-report/claude-profile available as plain
 # commands: symlinks them into ~/.local/bin and, if that directory isn't on
 # $PATH yet, adds it to ~/.bashrc. Safe to re-run (idempotent).
 # Usage:  ./setup.sh
@@ -13,7 +13,7 @@ PATH_MARKER="# added by claude-multi-profile-sync-drive/setup.sh"
 mkdir -p "$BIN_DIR"
 
 echo "== Linking scripts into $BIN_DIR =="
-for name in claude-pull claude-push claude-sync-report; do
+for name in claude-pull claude-push claude-sync-report claude-profile; do
   target="$BIN_DIR/$name"
   src="$SCRIPT_DIR/$name"
   if [ -L "$target" ] && [ "$(readlink -f -- "$target")" = "$src" ]; then

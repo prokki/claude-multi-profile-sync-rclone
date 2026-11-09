@@ -63,6 +63,7 @@ PROFILE_FILE="$PROFILES_DIR/$PROFILE.conf"
   exit 1
 }
 . "$PROFILE_FILE"
+CFG="${CFG:-$HOME/.claude-$PROFILE}"   # default: ~/.claude-<profile>
 MEM="$CFG/projects"
 
 echo ">> Push [$PROFILE] to $REMOTE${DRY_OPT:+  (DRY RUN - nothing is changed)}"

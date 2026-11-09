@@ -1,0 +1,105 @@
+#!/usr/bin/env sh
+# Starts Claude Code with the config directory of a profile (CLAUDE_CONFIG_DIR).
+# Usage:  claude-profile [-c|--cd] [-n|--dry-run] <profile> [claude options ...]
+# Everything after <profile> is passed to 'claude' unchanged.
+# Starts in the CURRENT directory; with -c/--cd it changes to the profile's
+# PROJECTS directory first.
+set -eu
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd)"
+PROFILES_DIR="$SCRIPT_DIR/profiles"
+
+list_profiles() { find "$PROFILES_DIR" -maxdepth 1 -name '*.conf' 2>/dev/null | sed 's#.*/##; s/\.conf$//' | sort; }
+
+usage() {
+  echo "Usage: claude-profile [-c|--cd] [-n|--dry-run] <profile> [claude options ...]"
+  echo "  -c, --cd        change to the profile's PROJECTS directory before starting"
+  echo "  -n, --dry-run   only show what would be started (profile, directory, config dir)"
+  echo "  -h, --help      show this help"
+  echo "Available profiles:"
+  list_profiles | sed 's/^/  /'
+}
+
+CD_OPT=""
+DRY_OPT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -c|--cd) CD_OPT=1; shift ;;
+    -n|--dry-run) DRY_OPT=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    -*) echo "ERROR: unknown option '$1' (options for claude go AFTER the profile name)." >&2; usage >&2; exit 2 ;;
+    *) break ;;
+  esac
+done
+
+PROFILE="${1:-}"
+case "$PROFILE" in
+  ''|*/*|.|..)
+    echo "ERROR: missing or invalid profile name." >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+shift
+PROFILE_FILE="$PROFILES_DIR/$PROFILE.conf"
+[ -f "$PROFILE_FILE" ] || {
+  echo "ERROR: unknown profile '$PROFILE'." >&2
+  usage >&2
+  echo "New profile? Add $PROFILE_FILE (see profiles/*.conf.example for the format)." >&2
+  exit 1
+}
+. "$PROFILE_FILE"
+CFG="${CFG:-$HOME/.claude-$PROFILE}"
+
+if [ -n "$CD_OPT" ]; then
+  [ -d "$PROJECTS" ] || { echo "ERROR: PROJECTS directory $PROJECTS does not exist." >&2; exit 1; }
+  cd -- "$PROJECTS"
+fi
+
+# Guard: ask if started inside the project tree of ANOTHER profile (and not
+# inside this profile's own tree). Reads PROJECTS of every other profile.
+HERE="$(pwd -P)/"
+own="$(CDPATH= cd -- "$PROJECTS" 2>/dev/null && pwd -P || true)"
+case "$HERE" in
+  "$own"/*) ;;
+  *)
+    for other in $(list_profiles); do
+      [ "$other" = "$PROFILE" ] && continue
+      op="$( . "$PROFILES_DIR/$other.conf"; printf '%s' "$PROJECTS" )"
+      op="$(CDPATH= cd -- "$op" 2>/dev/null && pwd -P || true)"
+      [ -n "$op" ] || continue
+      case "$HERE" in
+        "$op"/*)
+          printf 'WARNING: profile "%s" started in %s (project tree of profile "%s").\n' "$PROFILE" "$(pwd -P)" "$other" >&2
+          if [ -n "$DRY_OPT" ]; then
+            echo "  (dry run: would ask for confirmation here)" >&2
+          else
+            [ -t 0 ] || { echo "ERROR: not interactive - aborting." >&2; exit 1; }
+            printf 'Start anyway? [y/N] ' >&2
+            read -r answer
+            case "$answer" in y|Y|j|J) ;; *) echo "Aborted." >&2; exit 1 ;; esac
+          fi
+          ;;
+      esac
+    done
+    ;;
+esac
+
+# Notice: ~/.claude content is loaded as project context in EVERY session.
+found=""
+for n in CLAUDE.md rules settings.json settings.local.json skills agents commands; do
+  [ -e "$HOME/.claude/$n" ] && found="$found $n"
+done
+[ -z "$found" ] || printf 'NOTE: ~/.claude contains%s - loaded as project context in every session.\n' "$found" >&2
+
+if [ -n "$DRY_OPT" ]; then
+  echo "profile:           $PROFILE"
+  echo "directory:         $(pwd -P)"
+  echo "CLAUDE_CONFIG_DIR: $CFG"
+  echo "command:           claude $*"
+  exit 0
+fi
+
+CLAUDE_CONFIG_DIR="$CFG"
+export CLAUDE_CONFIG_DIR
+exec claude "$@"

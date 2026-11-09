@@ -25,6 +25,7 @@ PROFILE_FILE="$PROFILES_DIR/$PROFILE.conf"
   exit 1
 }
 . "$PROFILE_FILE"
+CFG="${CFG:-$HOME/.claude-$PROFILE}"   # default: ~/.claude-<profile>
 MEM="$CFG/projects"
 # skills/ counts only for profiles that sync it (SYNC_SKILLS=1)
 SKILLS_DIR=""

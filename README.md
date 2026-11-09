@@ -44,13 +44,15 @@ environment.
 | `claude-pull [-n] <profile>` | Fetches project data, memory (incl. transcripts), `settings.json`, `CLAUDE.md`, `bin/`, `docs/`, `tmp/` (and `skills/`, see [Skills](#skills)) from the cloud. Run at session **start**. |
 | `claude-push [-n] <profile>` | Backs up the same categories to the cloud. Run at session **end**. Checks beforehand that the local source folders exist (otherwise a moved/deleted directory would empty the cloud copy). |
 | `profiles/*.conf.example` / `profiles/*.conf` | Profile definitions (remote, local paths), one file per profile. The `.example` files are checked in as templates, the plain `.conf` files hold your real values and are gitignored (see [Setup](#setup)). |
+| `claude-profile [-c] [-n] <profile> [claude options]` | Starts `claude` with the profile's `CLAUDE_CONFIG_DIR` (replaces per-profile shell aliases/functions). Starts in the **current** directory; `-c`/`--cd` changes to the profile's `PROJECTS` first. Asks for confirmation if started inside the project tree of another profile. Options after the profile name go to `claude` unchanged. |
 | `claude-sync-report <profile>` | Size/content overview (local state) by category and project. Automatically called at the end of `pull`/`push`. |
 
 ### Options
 
 | Option | Meaning |
 |---|---|
-| `-n`, `--dry-run` | Shows what would be transferred or deleted, changes nothing. Use it for the first run on a new machine. |
+| `-n`, `--dry-run` | `claude-pull`/`claude-push`: shows what would be transferred or deleted, changes nothing. Use it for the first run on a new machine. `claude-profile`: only prints what would be started. |
+| `-c`, `--cd` | `claude-profile` only: change to the profile's `PROJECTS` directory before starting. |
 | `-h`, `--help` | Usage and the list of available profiles. |
 
 ## Security notes
@@ -78,7 +80,7 @@ PROJECTS="$HOME/Projects/claude-private"     # local project folder
 CFG="$HOME/.claude-private"                  # this profile's CLAUDE_CONFIG_DIR
 ```
 
-Optional fourth variable:
+`CFG` is optional and defaults to `$HOME/.claude-<profile>`. Optional extra variable:
 
 ```sh
 SYNC_SKILLS=1                                # also sync $CFG/skills (see below)
@@ -132,7 +134,15 @@ That's why the profiles here use their own directory names, like
 export CLAUDE_CONFIG_DIR="$HOME/.claude-private"
 ```
 
-(e.g. as a per-profile shell alias, or set per project.)
+`claude-profile <profile>` does exactly that, reading `CFG` and `PROJECTS` from
+`profiles/<profile>.conf` — one source of truth for sync **and** start (no
+hard-coded paths in shell aliases/functions):
+
+```sh
+claude-profile work              # start in the current directory
+claude-profile -c work           # start in the profile's PROJECTS directory
+claude-profile work --resume     # options after the profile go to claude
+```
 
 ## Requirements
 

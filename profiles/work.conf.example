@@ -3,7 +3,8 @@
 # *.conf.example is checked in.
 REMOTE="mywork_remote:claude-sync"
 PROJECTS="$HOME/claude-work"
-CFG="$HOME/.claude-work"
+# CFG is optional, default: $HOME/.claude-work (= this profile's CLAUDE_CONFIG_DIR)
+# CFG="$HOME/.claude-work"
 # Optional: also sync $CFG/skills (copy --update, nothing is deleted; skills/synced/
 # and *.bak-* are excluded). Leave it out (or empty) to skip skills for this profile.
 SYNC_SKILLS=1
