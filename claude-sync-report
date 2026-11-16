@@ -75,7 +75,7 @@ done
 
 # --- Largest individual files (bloat detector) ---
 echo "-- Largest individual files (category + full path) --"
-find "$PROJECTS" "$MEM" "$CFG/CLAUDE.md" "$CFG/bin" "$CFG/docs" "$CFG/tmp" $SKILLS_DIR -type f -exec du -h {} + 2>/dev/null | sort -rh | head -5 | while read -r sz path; do
+find "$PROJECTS" "$MEM" "$CFG/CLAUDE.md" "$CFG/bin" "$CFG/docs" "$CFG/tmp" $SKILLS_DIR -type f -exec du -h {} + 2>/dev/null | { sort -rh 2>/dev/null || true; } | head -5 | while read -r sz path; do
   case "$path" in
     "$MEM"/*)     [ "${path##*.}" = "jsonl" ] && cat="Transcript" || cat="Memory" ;;
     "$CFG"/bin/*) cat="Bin" ;;
